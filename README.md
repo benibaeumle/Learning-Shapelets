@@ -74,7 +74,7 @@ See the [demo](https://github.com/benibaeumle/Learning-Shapelets/blob/main/demo/
   the number of output classes.
 * `loss_func` : **torch.nn**  
   the loss function.
-* `dist_measure` : **euclidean**, **cross-correlation**, or **cosine**  
+* `dist_measure` : **'euclidean'**, **'cross-correlation'**, or **'cosine'**  
   the distance measure to use to compute the distances between the shapelets.
   and the time series.
 * `to_cuda` : **bool**  
