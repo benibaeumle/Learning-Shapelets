@@ -27,7 +27,7 @@ learning_shapelets = LearningShapelets(len_ts=len_ts,
                                        verbose=1,
                                        dist_measure=dist_measure)
 
-# Initialize shapelet weights, the original paper uses k-Means
+# (Optionally) Initialize shapelet weights, the original paper uses k-Means
 # otherwise the shapelets will be initialized randomly.
 # Note: This implementation does not provide an initialization strategy other
 # than random initialization.
