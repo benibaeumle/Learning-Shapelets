@@ -558,8 +558,8 @@ class LearningShapelets:
     to_cuda : bool
         if true loads everything to the GPU
     """
-    def __init__(self, len_ts, shapelets_size_and_len, loss_func, in_channels=1, num_classes=2, shapelet_classes=None,
-                 dist_measure='euclidean', verbose=0, initialization="random", to_cuda=True):
+    def __init__(self, len_ts, shapelets_size_and_len, loss_func, in_channels=1, num_classes=2,
+                 dist_measure='euclidean', verbose=0, to_cuda=True):
 
         self.model = LearningShapeletsModel(len_ts=len_ts, shapelets_size_and_len=shapelets_size_and_len,
                                             in_channels=in_channels, num_classes=num_classes, dist_measure=dist_measure,
@@ -569,11 +569,8 @@ class LearningShapelets:
             self.model.cuda()
 
         self.shapelets_size_and_len = shapelets_size_and_len
-        self.shapelet_classes = shapelet_classes
         self.loss_func = loss_func
-        self.initialization = initialization
         self.verbose = verbose
-        self.initialized = False
         self.optimizer = None
 
     def set_optimizer(self, optimizer):
@@ -597,7 +594,6 @@ class LearningShapelets:
         @rtype: None
         """
         self.model.set_shapelet_weights(weights)
-        self.initialized = True
         if self.optimizer is not None:
             warnings.warn("Updating the model parameters requires to reinitialize the optimizer. Please reinitialize"
                           " the optimizer via set_optimizer(optim)")
@@ -630,8 +626,6 @@ class LearningShapelets:
         y_hat = self.model(x)
         loss = self.loss_func(y_hat, y)
         loss.backward()
-        #print(self.model.shapelets_blocks.get_block(0).shapelets.data.grad)
-        #print(self.model.linear.weight.grad)
         self.optimizer.step()
         self.optimizer.zero_grad()
         return loss.item()
