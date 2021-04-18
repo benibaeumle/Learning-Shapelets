@@ -60,6 +60,42 @@ predictions = learning_shapelets.predict(X_test)
 
 See the [demo](https://github.com/benibaeumle/Learning-Shapelets/blob/main/demo/demo.ipynb) for a detailed example.
 
+### Parameters
+
+* `len_ts` : **int**  
+  The length of the time series.
+* `shapelets_size_and_len` : **dict(int: int)**  
+  The keys are the length of the shapelets and the values the number of shapelets of
+  a given length, e.g. {40: 4, 80: 4} learns 4 shapelets of length 40 and 4 shapelets of
+  length 80.   
+* `in_channels` : **int**  
+  the number of channels of the time series.
+* `num_classes` : **int**  
+  the number of output classes.
+* `loss_func` : **torch.nn**  
+  the loss function.
+* `dist_measure` : **euclidean**, **cross-correlation**, or **cosine**  
+  the distance measure to use to compute the distances between the shapelets.
+  and the time series.
+* `to_cuda` : **bool**  
+  Performs computations on GPU is true. Needs pytorch with GPU support.
+* `verbose` : **bool**  
+  Monitors training loss if set to true.
+
+### Methods
+
+* `fit(X, Y, epochs=1, batch_size=256, shuffle=False, drop_last=False)`: Learn time-series shapelets. If `shuffle` is true, the batches are shuffled after each epoch
+  If `drop_last` is true, the last batch will be ignored if it is smaller than the batch size.
+* `transform(X, Y)`: Perform shapelet transform
+* `fit_transform(X, Y, epochs=1, batch_size=256, shuffle=False, drop_last=False)`: Perform `fit` followed by `transform`.
+* `set_optimizer(optimizer)`: Set an optimizer for training.
+* `set_shapelet_weights(weights)`: Initialize shapelets.
+* `set_shapelet_weights_of_block(i, weights_block)`: Initialize the weights of a shapelet block, blocks are sorted ascending according to the length of the shapelets
+* `update(x, y)`: Perform a single gradient update step with respect to batch (x, y).
+* `predict(X)`: Classify X.
+* `get_shapelets()`: Get the learned shapelets.
+* `get_weights_linear_layer()`: Get the weights and biases of the logistic regression layer
+
 ## License
 
 Released under MIT License. The code was developed by Benedikt Bäumle.

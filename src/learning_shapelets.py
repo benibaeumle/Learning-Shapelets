@@ -550,11 +550,22 @@ class LearningShapelets:
     Wraps Learning Shapelets in a sklearn kind of fashion.
     ----------
     len_ts : int
-        the length of the time series
+        the length of the time series.
     shapelets_size_and_len : dict(int:int)
-        keys are the length of the shapelets for a block and the values the number of shapelets for the block
+        The keys are the length of the shapelets and the values the number of shapelets of
+        a given length, e.g. {40: 4, 80: 4} learns 4 shapelets of length 40 and 4 shapelets of
+        length 80.
+    loss_func : torch.nn
+        the loss function
     in_channels : int
         the number of input channels of the dataset
+    num_classes : int
+        the number of output classes.
+    dist_measure: `euclidean`, `cross-correlation`, or `cosine`
+        the distance measure to use to compute the distances between the shapelets.
+      and the time series.
+    verbose : bool
+        monitors training loss if set to true.
     to_cuda : bool
         if true loads everything to the GPU
     """
@@ -692,6 +703,10 @@ class LearningShapelets:
         with torch.no_grad():
             shapelet_transform = self.model.transform(X)
         return shapelet_transform.squeeze().cpu().detach().numpy()
+
+    def fit_transform(self, X, Y, epochs=1, batch_size=256, shuffle=False, drop_last=False):
+        self.fit(X, Y, epochs=epochs, batch_size=batch_size, shuffle=shuffle, drop_last=drop_last)
+        return self.transform(X)
 
     def predict(self, X, batch_size=256):
         """
