@@ -1,0 +1,741 @@
+from collections import OrderedDict
+import warnings
+
+import numpy as np
+import torch
+from torch import tensor, nn
+from torch.utils.data import DataLoader, TensorDataset
+from tqdm import tqdm
+
+class MinEuclideanDistBlock(nn.Module):
+    """
+    Calculates the euclidean distances of a bunch of shapelets to a data set and performs global min-pooling
+    Parameters.
+    ----------
+    shapelets_size : int
+        the size of the shapelets / the number of time steps
+    num_shapelets : int
+        the number of shapelets that the block should contain
+    in_channels : int
+        the number of input channels of the dataset
+    cuda : bool
+        if true loads everything to the GPU
+    """
+    def __init__(self, shapelets_size, num_shapelets, in_channels=1, to_cuda=True):
+        super(MinEuclideanDistBlock, self).__init__()
+        self.to_cuda = to_cuda
+        self.num_shapelets = num_shapelets
+        self.shapelets_size = shapelets_size
+        self.in_channels = in_channels
+
+        # if not registered as parameter, the optimizer will not be able to see the parameters
+        shapelets = torch.randn(self.in_channels, self.num_shapelets, self.shapelets_size, requires_grad=True)
+        if self.to_cuda:
+            shapelets = shapelets.cuda()
+        self.shapelets = nn.Parameter(shapelets).contiguous()
+        # otherwise gradients will not be backpropagated
+        self.shapelets.retain_grad()
+
+    def forward(self, x):
+        """
+        1) Unfold the data set 2) calculate euclidean distance 3) sum over channels and 4) perform global min-pooling
+        @param x: the time series data
+        @type x: tensor(float) of shape (num_samples, in_channels, len_ts)
+        @return: Return the euclidean for each pair of shapelet and time series instance
+        @rtype: tensor(num_samples, num_shapelets)
+        """
+        # unfold time series to emulate sliding window
+        x = x.unfold(2, self.shapelets_size, 1).contiguous()
+        # calculate euclidean distance
+        x = torch.cdist(x, self.shapelets, p=2)
+
+        # add up the distances of the channels in case of
+        # multivariate time series
+        # Corresponds to the approach 1 and 3 here: https://stats.stackexchange.com/questions/184977/multivariate-time-series-euclidean-distance
+        x = torch.sum(x, dim=1, keepdim=True).transpose(2, 3)
+        # hard min compared to soft-min from the paper
+        x, _ = torch.min(x, 3)
+        return x
+
+    def get_shapelets(self):
+        """
+        Return the shapelets contained in this block.
+        @return: An array containing the shapelets
+        @rtype: tensor(float) with shape (num_shapelets, in_channels, shapelets_size)
+        """
+        return self.shapelets.transpose(1, 0)
+
+    def set_shapelet_weights(self, weights):
+        """
+        Set weights for all shapelets in this block.
+        @param weights: the weights to set for the shapelets
+        @type weights: array-like(float) of shape (num_shapelets, in_channels, shapelets_size)
+        @return:
+        @rtype: None
+        """
+        if not isinstance(weights, torch.Tensor):
+            weights = torch.tensor(weights, dtype=torch.float)
+        if self.cuda:
+            weights = weights.cuda()
+        # transpose since internally we need shape (in_channels, num_shapelets, shapelets_size)
+        weights = weights.transpose(1, 0)
+
+        if not list(weights.shape) == list(self.shapelets.shape):
+            raise ValueError(f"Shapes do not match. Currently set weights have shape {list(self.shapelets.shape)}"
+                             f"compared to {list(weights.shape)}")
+
+        self.shapelets = nn.Parameter(weights)
+        self.shapelets.retain_grad()
+
+    def set_weights_of_single_shapelet(self, j, weights):
+        """
+        Set the weights of a single shapelet.
+        @param j: The index of the shapelet to set
+        @type j: int
+        @param weights: the weights for the shapelet
+        @type weights: array-like(float) of shape (in_channels, shapelets_size)
+        @return:
+        @rtype: None
+        """
+        if not list(weights.shape) == list(self.shapelets[:, j].shape):
+            raise ValueError(f"Shapes do not match. Currently set weights have shape {list(self.shapelets[:, j].shape)}"
+                             f"compared to {list(weights[j].shape)}")
+        if not isinstance(weights, torch.Tensor):
+            weights = torch.Tensor(weights, dtype=torch.float)
+        if self.cuda:
+            weights = weights.cuda()
+        self.shapelets[:, j] = weights
+        self.shapelets = nn.Parameter(self.shapelets).contiguous()
+        self.shapelets.retain_grad()
+
+
+class MaxCosineSimilarityBlock(nn.Module):
+    """
+    Calculates the cosine similarity of a bunch of shapelets to a data set and performs global max-pooling
+    Parameters.
+    ----------
+    shapelets_size : int
+        the size of the shapelets / the number of time steps
+    num_shapelets : int
+        the number of shapelets that the block should contain
+    in_channels : int
+        the number of input channels of the dataset
+    cuda : bool
+        if true loads everything to the GPU
+    """
+    # TODO Why is this multiple time slower than the other two implementations?
+    def __init__(self, shapelets_size, num_shapelets, in_channels=1, to_cuda=True):
+        super(MaxCosineSimilarityBlock, self).__init__()
+        self.to_cuda = to_cuda
+        self.num_shapelets = num_shapelets
+        self.shapelets_size = shapelets_size
+        self.in_channels = in_channels
+        self.relu = nn.ReLU()
+
+        # if not registered as parameter, the optimizer will not be able to see the parameters
+        shapelets = torch.randn(self.in_channels, self.num_shapelets, self.shapelets_size, requires_grad=True,
+                                dtype=torch.float)
+        if self.to_cuda:
+            shapelets = shapelets.cuda()
+        self.shapelets = nn.Parameter(shapelets).contiguous()
+        # otherwise gradients will not be backpropagated
+        self.shapelets.retain_grad()
+
+    def forward(self, x):
+        """
+        1) Unfold the data set 2) calculate norm of the data and the shapelets 3) calculate pair-wise dot-product
+        4) sum over channels 5) perform a ReLU to ignore the negative values and 6) perform global max-pooling
+        @param x: the time series data
+        @type x: tensor(float) of shape (num_samples, in_channels, len_ts)
+        @return: Return the cosine similarity for each pair of shapelet and time series instance
+        @rtype: tensor(num_samples, num_shapelets)
+        """
+        # unfold time series to emulate sliding window
+        x = x.unfold(2, self.shapelets_size, 1).contiguous()
+        # normalize with l2 norm
+        x = x / x.norm(p=2, dim=3, keepdim=True).clamp(min=1e-8)
+        shapelets_norm = self.shapelets / self.shapelets.norm(p=2, dim=2, keepdim=True).clamp(min=1e-8)
+        # calculate cosine similarity via dot product on already normalized ts and shapelets
+        x = torch.matmul(x, shapelets_norm.transpose(1, 2))
+        # add up the distances of the channels in case of
+        # multivariate time series
+        # Corresponds to the approach 1 and 3 here: https://stats.stackexchange.com/questions/184977/multivariate-time-series-euclidean-distance
+        x = torch.sum(x, dim=1, keepdim=True).transpose(2, 3)
+        # ignore negative distances
+        x = self.relu(x)
+        # hard min compared to soft-min from the paper
+        x, _ = torch.max(x, 3)
+        return x
+
+    def get_shapelets(self):
+        """
+        Return the shapelets contained in this block.
+        @return: An array containing the shapelets
+        @rtype: tensor(float) with shape (num_shapelets, in_channels, shapelets_size)
+        """
+        return self.shapelets.transpose(1, 0)
+
+    def set_shapelet_weights(self, weights):
+        """
+        Set weights for all shapelets in this block.
+        @param weights: the weights to set for the shapelets
+        @type weights: array-like(float) of shape (num_shapelets, in_channels, shapelets_size)
+        @return:
+        @rtype: None
+        """
+        if not isinstance(weights, torch.Tensor):
+            weights = torch.tensor(weights, dtype=torch.float)
+        if self.cuda:
+            weights = weights.cuda()
+        # transpose since internally we need shape (in_channels, num_shapelets, shapelets_size)
+        weights = weights.transpose(1, 0)
+
+        if not list(weights.shape) == list(self.shapelets.shape):
+            raise ValueError(f"Shapes do not match. Currently set weights have shape {list(self.shapelets.shape)} "
+                             f"compared to {list(weights.shape)}")
+
+        self.shapelets = nn.Parameter(weights)
+
+    def set_weights_of_single_shapelet(self, j, weights):
+        """
+        Set the weights of a single shapelet.
+        @param j: The index of the shapelet to set
+        @type j: int
+        @param weights: the weights for the shapelet
+        @type weights: array-like(float) of shape (in_channels, shapelets_size)
+        @return:
+        @rtype: None
+        """
+        if not list(weights.shape) == list(self.shapelets[:, j].shape):
+            raise ValueError(f"Shapes do not match. Currently set weights have shape {list(self.shapelets[:, j].shape)} "
+                             f"compared to {list(weights[j].shape)}")
+        if not isinstance(weights, torch.Tensor):
+            weights = torch.Tensor(weights, dtype=torch.float)
+        if self.cuda:
+            weights = weights.cuda()
+        self.shapelets[:, j] = weights
+        self.shapelets = nn.Parameter(self.shapelets).contiguous()
+
+
+class MaxCrossCorrelationBlock(nn.Module):
+    """
+    Calculates the cross-correlation of a bunch of shapelets to a data set, implemented via convolution and
+    performs global max-pooling.
+    Parameters
+    ----------
+    len_ts : int
+        the length of the time series
+    shapelets_size : int
+        the size of the shapelets / the number of time steps
+    num_shapelets : int
+        the number of shapelets that the block should contain
+    in_channels : int
+        the number of input channels of the dataset
+    cuda : bool
+        if true loads everything to the GPU
+    """
+    def __init__(self, len_ts, shapelets_size, num_shapelets, in_channels=1, to_cuda=True):
+        super(MaxCrossCorrelationBlock, self).__init__()
+        self.shapelets = nn.Conv1d(in_channels, num_shapelets, kernel_size=shapelets_size)
+        self.max_pool = nn.MaxPool1d(len_ts - shapelets_size + 1, stride=1)
+        self.num_shapelets = num_shapelets
+        self.shapelets_size = shapelets_size
+        if to_cuda:
+            self.cuda()
+
+    def forward(self, x):
+        """
+        1) Apply 1D convolution 2) Apply global max-pooling
+        @param x: the data set of time series
+        @type x: array(float) of shape (num_samples, in_channels, len_ts)
+        @return: Return the most similar values for each pair of shapelet and time series instance
+        @rtype: tensor(n_samples, num_shapelets)
+        """
+        x = self.shapelets(x)
+        x = self.max_pool(x).transpose(2, 1)
+        return x
+
+    def get_shapelets(self):
+        """
+        Return the shapelets contained in this block.
+        @return: An array containing the shapelets
+        @rtype: tensor(float) with shape (num_shapelets, in_channels, shapelets_size)
+        """
+        return self.shapelets.weight.data
+
+    def set_shapelet_weights(self, weights):
+        """
+        Set weights for all shapelets in this block.
+        @param weights: the weights to set for the shapelets
+        @type weights: array-like(float) of shape (num_shapelets, in_channels, shapelets_size)
+        @return:
+        @rtype: None
+        """
+        if not isinstance(weights, torch.Tensor):
+            weights = torch.tensor(weights, dtype=torch.float)
+        if self.cuda:
+            weights = weights.cuda()
+
+        if not list(weights.shape) == list(self.shapelets.weight.data.shape):
+            raise ValueError(f"Shapes do not match. Currently set weights have shape"
+                             f"{list(self.shapelets.weight.data.shape)} compared to {list(weights.shape)}")
+
+        self.shapelets.weight.data = weights
+
+    def set_weights_of_single_shapelet(self, j, weights):
+        """
+        Set the weights of a single shapelet.
+        @param j: The index of the shapelet to set
+        @type j: int
+        @param weights: the weights for the shapelet
+        @type weights: array-like(float) of shape (in_channels, shapelets_size)
+        @return:
+        @rtype: None
+        """
+        if not list(weights.shape) == list(self.shapelets.weight.data[j, :].shape):
+            raise ValueError(f"Shapes do not match. Currently set weights have shape"
+                             f"{list(self.shapelets.weight.data[j, :].shape)} compared to {list(weights.shape)}")
+        if not isinstance(weights, torch.Tensor):
+            weights = torch.tensor(weights, dtype=torch.float)
+        if self.cuda:
+            weights = weights.cuda()
+        self.shapelets.weight.data[j, :] = weights
+
+
+class ShapeletsDistBlocks(nn.Module):
+    """
+    Defines a number of blocks containing a number of shapelets, whereas
+    the shapelets in each block have the same size.
+    Parameters
+    ----------
+    len_ts : int
+        the length of the time series
+    shapelets_size_and_len : dict(int:int)
+        keys are the length of the shapelets for a block and the values the number of shapelets for the block
+    in_channels : int
+        the number of input channels of the dataset
+    to_cuda : bool
+        if true loads everything to the GPU
+    """
+    def __init__(self, len_ts, shapelets_size_and_len, in_channels=1, dist_measure='euclidean', to_cuda=True):
+        super(ShapeletsDistBlocks, self).__init__()
+        self.to_cuda = to_cuda
+        self.shapelets_size_and_len = OrderedDict(sorted(shapelets_size_and_len.items(), key=lambda x: x[0]))
+        self.in_channels = in_channels
+        self.dist_measure = dist_measure
+        if dist_measure == 'euclidean':
+            self.blocks = nn.ModuleList(
+                [MinEuclideanDistBlock(shapelets_size=shapelets_size, num_shapelets=num_shapelets,
+                                       in_channels=in_channels, to_cuda=self.to_cuda)
+                 for shapelets_size, num_shapelets in self.shapelets_size_and_len.items()])
+        elif dist_measure == 'cross-correlation':
+            self.blocks = nn.ModuleList(
+                [MaxCrossCorrelationBlock(len_ts=len_ts, shapelets_size=shapelets_size, num_shapelets=num_shapelets,
+                                          in_channels=in_channels, to_cuda=self.to_cuda)
+                 for shapelets_size, num_shapelets in self.shapelets_size_and_len.items()])
+        elif dist_measure == 'cosine':
+            self.blocks = nn.ModuleList(
+                [MaxCosineSimilarityBlock(shapelets_size=shapelets_size, num_shapelets=num_shapelets,
+                                          in_channels=in_channels, to_cuda=self.to_cuda)
+                 for shapelets_size, num_shapelets in self.shapelets_size_and_len.items()])
+        else:
+            raise ValueError("dist_measure must be either of 'euclidean', 'cross-correlation', 'cosine'")
+
+    def forward(self, x):
+        """
+        Calculate the distances of each shapelet block to the time series data x and concatenate the results.
+        @param x: the time series data
+        @type x: tensor(float) of shape (n_samples, in_channels, len_ts)
+        @return: a distance matrix containing the distances of each shapelet to the time series data
+        @rtype: tensor(float) of shape
+        """
+        out = torch.tensor([], dtype=torch.float).cuda() if self.to_cuda else torch.tensor([], dtype=torch.float)
+        for block in self.blocks:
+            out = torch.cat((out, block(x)), dim=2)
+
+        return out
+
+    def get_blocks(self):
+        """
+        @return: the list of shapelet blocks
+        @rtype: nn.ModuleList
+        """
+        return self.blocks
+
+    def get_block(self, i):
+        """
+        Get a specific shapelet block. The blocks are ordered (ascending) according to the shapelet lengths.
+        @param i: the index of the block to fetch
+        @type i: int
+        @return: return shapelet block i
+        @rtype: nn.Module, either
+        """
+        return self.blocks[i]
+
+    def set_shapelet_weights_of_block(self, i, weights):
+        """
+        Set the weights of the shapelet block i.
+        @param i: the index of the shapelet block
+        @type i: int
+        @param weights: the weights to set for the shapelets
+        @type weights: array-like(float) of shape (in_channels, num_shapelets, shapelets_size)
+        @return:
+        @rtype: None
+        """
+        self.blocks[i].set_shapelet_weights(weights)
+
+    def get_shapelets_of_block(self, i):
+        """
+        Return the shapelet of shapelet block i.
+        @param i: the index of the shapelet block
+        @type i: int
+        @return: the weights of the shapelet block
+        @rtype: tensor(float) of shape (in_channels, num_shapelets, shapelets_size)
+        """
+        return self.blocks[i].get_shapelets()
+
+    def get_shapelet(self, i, j):
+        """
+        Return the shapelet at index j of shapelet block i.
+        @param i: the index of the shapelet block
+        @type i: int
+        @param j: the index of the shapelet in shapelet block i
+        @type j: int
+        @return: return the weights of the shapelet
+        @rtype: tensor(float) of shape
+        """
+        shapelet_weights = self.blocks[i].get_shapelets()
+        return shapelet_weights[j, :]
+
+    def set_shapelet_weights_of_single_shapelet(self, i, j, weights):
+        """
+        Set the weights of shapelet j of shapelet block i.
+        @param i: the index of the shapelet block
+        @type i: int
+        @param j: the index of the shapelet in shapelet block i
+        @type j: int
+        @param weights: the new weights for the shapelet
+        @type weights: array-like of shape (in_channels, shapelets_size)
+        @return:
+        @rtype: None
+        """
+        self.blocks[i].set_weights_of_single_shapelet(j, weights)
+
+    def get_shapelets(self):
+        """
+        Return a matrix of all shapelets. The shapelets are ordered (ascending) according to
+        the shapelet lengths and padded with NaN.
+        @return: a tensor of all shapelets
+        @rtype: tensor(float) with shape (in_channels, num_total_shapelets, shapelets_size_max)
+        """
+        max_shapelet_len = max(self.shapelets_size_and_len.keys())
+        num_total_shapelets = sum(self.shapelets_size_and_len.values())
+        shapelets = torch.Tensor(num_total_shapelets, self.in_channels, max_shapelet_len)
+        shapelets[:] = np.nan
+        start = 0
+        for block in self.blocks:
+            shapelets_block = block.get_shapelets()
+            end = start + block.num_shapelets
+            shapelets[start:end, :, :block.shapelets_size] = shapelets_block
+            start += block.num_shapelets
+        return shapelets
+
+
+class LearningShapeletsModel(nn.Module):
+    """
+    Implements Learning Shapelets. Just puts together the ShapeletsDistBlocks with a
+    linear layer on top.
+    ----------
+    len_ts : int
+        the length of the time series
+    shapelets_size_and_len : dict(int:int)
+        keys are the length of the shapelets for a block and the values the number of shapelets for the block
+    in_channels : int
+        the number of input channels of the dataset
+    to_cuda : bool
+        if true loads everything to the GPU
+    """
+    def __init__(self, len_ts, shapelets_size_and_len, in_channels=1, num_classes=2, dist_measure='euclidean',
+                 to_cuda=True):
+        super(LearningShapeletsModel, self).__init__()
+
+        self.to_cuda = to_cuda
+        self.shapelets_size_and_len = shapelets_size_and_len
+        self.num_shapelets = sum(shapelets_size_and_len.values())
+        self.shapelets_blocks = ShapeletsDistBlocks(len_ts=len_ts, in_channels=in_channels,
+                                                    shapelets_size_and_len=shapelets_size_and_len,
+                                                    dist_measure=dist_measure, to_cuda=to_cuda)
+        self.linear = nn.Linear(self.num_shapelets, num_classes)
+
+        if self.to_cuda:
+            self.cuda()
+
+    def forward(self, x):
+        """
+        Calculate the distances of each time series to the shapelets and stack a linear layer on top.
+        @param x: the time series data
+        @type x: tensor(float) of shape (n_samples, in_channels, len_ts)
+        @return: the logits for the class predictions of the model
+        @rtype: tensor(float) of shape (num_samples, num_classes)
+        """
+        x = self.shapelets_blocks(x)
+        y = self.linear(x)
+        y = torch.squeeze(y, 1)
+        return y
+
+    def transform(self, X):
+        """
+        Performs the shapelet transform with the input time series data x
+        @param X: the time series data
+        @type X: tensor(float) of shape (n_samples, in_channels, len_ts)
+        @return: the shapelet transform of x
+        @rtype: tensor(float) of shape (num_samples, num_shapelets)
+        """
+        return self.shapelets_blocks(X)
+
+    def get_shapelets(self):
+        """
+        Return a matrix of all shapelets. The shapelets are ordered (ascending) according to
+        the shapelet lengths and padded with NaN.
+        @return: a tensor of all shapelets
+        @rtype: tensor(float) with shape (in_channels, num_total_shapelets, shapelets_size_max)
+        """
+        return self.shapelets_blocks.get_shapelets()
+
+    def set_shapelet_weights(self, weights):
+        """
+        Set the weights of all shapelets. The shapelet weights are expected to be ordered ascending according to the
+        length of the shapelets. The values in the matrix for shapelets of smaller length than the maximum
+        length are just ignored.
+        @param weights: the weights to set for the shapelets
+        @type weights: array-like(float) of shape (in_channels, num_total_shapelets, shapelets_size_max)
+        @return:
+        @rtype: None
+        """
+        start = 0
+        for i, (shapelets_size, num_shapelets) in enumerate(self.shapelets_size_and_len.items()):
+            end = start + num_shapelets
+            self.set_shapelet_weights_of_block(i, weights[start:end, :, :shapelets_size])
+            start = end
+
+    def set_shapelet_weights_of_block(self, i, weights):
+        """
+        Set the weights of shapelet block i.
+        @param i: The index of the shapelet block
+        @type i: int
+        @param weights: the weights for the shapelets of block i
+        @type weights: array-like(float) of shape (in_channels, num_shapelets, shapelets_size)
+        @return:
+        @rtype: None
+        """
+        self.shapelets_blocks.set_shapelet_weights_of_block(i, weights)
+
+    def set_weights_of_shapelet(self, i, j, weights):
+        """
+        Set the weights of shapelet j in shapelet block i.
+        @param i: the index of the shapelet block
+        @type i: int
+        @param j: the index of the shapelet in shapelet block i
+        @type j: int
+        @param weights: the weights for the shapelet
+        @type weights: array-like(float) of shape (in_channels, shapelets_size)
+        @return:
+        @rtype: None
+        """
+        self.shapelets_blocks.set_shapelet_weights_of_single_shapelet(i, j, weights)
+
+
+class LearningShapelets:
+    """
+    Wraps Learning Shapelets in a sklearn kind of fashion.
+    ----------
+    len_ts : int
+        the length of the time series
+    shapelets_size_and_len : dict(int:int)
+        keys are the length of the shapelets for a block and the values the number of shapelets for the block
+    in_channels : int
+        the number of input channels of the dataset
+    to_cuda : bool
+        if true loads everything to the GPU
+    """
+    def __init__(self, len_ts, shapelets_size_and_len, loss_func, in_channels=1, num_classes=2, shapelet_classes=None,
+                 dist_measure='euclidean', verbose=0, initialization="random", to_cuda=True):
+
+        self.model = LearningShapeletsModel(len_ts=len_ts, shapelets_size_and_len=shapelets_size_and_len,
+                                            in_channels=in_channels, num_classes=num_classes, dist_measure=dist_measure,
+                                            to_cuda=to_cuda)
+        self.to_cuda = to_cuda
+        if to_cuda:
+            self.model.cuda()
+
+        self.shapelets_size_and_len = shapelets_size_and_len
+        self.shapelet_classes = shapelet_classes
+        self.loss_func = loss_func
+        self.initialization = initialization
+        self.verbose = verbose
+        self.initialized = False
+        self.optimizer = None
+
+    def set_optimizer(self, optimizer):
+        """
+        Set an optimizer for training.
+        @param optimizer: a PyTorch optimizer: https://pytorch.org/docs/stable/optim.html
+        @type optimizer: torch.optim
+        @return:
+        @rtype: None
+        """
+        self.optimizer = optimizer
+
+    def set_shapelet_weights(self, weights):
+        """
+        Set the weights of all shapelets. The shapelet weights are expected to be ordered ascending according to the
+        length of the shapelets. The values in the matrix for shapelets of smaller length than the maximum
+        length are just ignored.
+        @param weights: the weights to set for the shapelets
+        @type weights: array-like(float) of shape (in_channels, num_total_shapelets, shapelets_size_max)
+        @return:
+        @rtype: None
+        """
+        self.model.set_shapelet_weights(weights)
+        self.initialized = True
+        if self.optimizer is not None:
+            warnings.warn("Updating the model parameters requires to reinitialize the optimizer. Please reinitialize"
+                          " the optimizer via set_optimizer(optim)")
+
+    def set_shapelet_weights_of_block(self, i, weights):
+        """
+        Set the weights of shapelet block i.
+        @param i: The index of the shapelet block
+        @type i: int
+        @param weights: the weights for the shapelets of block i
+        @type weights: array-like(float) of shape (in_channels, num_shapelets, shapelets_size)
+        @return:
+        @rtype: None
+        """
+        self.model.set_shapelet_weights_of_block(i, weights)
+        if self.optimizer is not None:
+            warnings.warn("Updating the model parameters requires to reinitialize the optimizer. Please reinitialize"
+                          " the optimizer via set_optimizer(optim)")
+
+    def update(self, x, y):
+        """
+        Performs one gradient update step for the batch of time series and corresponding labels y.
+        @param x: the batch of time series
+        @type x: array-like(float) of shape (n_batch, in_channels, len_ts)
+        @param y: the labels of x
+        @type y: array-like(long) of shape (n_batch)
+        @return: the loss for the batch
+        @rtype: float
+        """
+        y_hat = self.model(x)
+        loss = self.loss_func(y_hat, y)
+        loss.backward()
+        #print(self.model.shapelets_blocks.get_block(0).shapelets.data.grad)
+        #print(self.model.linear.weight.grad)
+        self.optimizer.step()
+        self.optimizer.zero_grad()
+        return loss.item()
+
+    def fit(self, X, Y, epochs=1, batch_size=256, shuffle=False, drop_last=False):
+        """
+        Train the model.
+        @param X: the time series data set
+        @type X: array-like(float) of shape (n_samples, in_channels, len_ts)
+        @param Y: the labels of x
+        @type Y: array-like(long) of shape (n_batch)
+        @param epochs: the number of epochs to train
+        @type epochs: int
+        @param batch_size: the batch to train with
+        @type batch_size: int
+        @param shuffle: Shuffle the data at every epoch
+        @type shuffle: bool
+        @param drop_last: Drop the last batch if X is not divisible by the batch size
+        @type drop_last: bool
+        @return: a list of the training losses
+        @rtype: list(float)
+        """
+        if self.optimizer is None:
+            raise ValueError("No optimizer set. Please initialize an optimizer via set_optimizer(optim)")
+
+        # convert to pytorch tensors and data set / loader for training
+        if not isinstance(X, torch.Tensor):
+            X = tensor(X, dtype=torch.float).contiguous()
+        if not isinstance(Y, torch.Tensor):
+            Y = tensor(Y, dtype=torch.long).contiguous()
+        if self.to_cuda:
+            X = X.cuda()
+            Y = Y.cuda()
+
+        train_ds = TensorDataset(X, Y)
+        train_dl = DataLoader(train_ds, batch_size=batch_size, shuffle=shuffle, drop_last=drop_last)
+
+        # set model in train mode
+        self.model.train()
+
+        losses = []
+        progress_bar = tqdm(range(epochs), disable=False if self.verbose > 0 else True)
+        current_loss = 0
+        for _ in progress_bar:
+            for j, (x, y) in enumerate(train_dl):
+                current_loss = self.update(x, y)
+                losses.append(current_loss)
+            progress_bar.set_description(f"Loss: {current_loss}")
+        return losses
+
+    def transform(self, X):
+        """
+        Performs the shapelet transform with the input time series data x
+        @param X: the time series data
+        @type X: tensor(float) of shape (n_samples, in_channels, len_ts)
+        @return: the shapelet transform of x
+        @rtype: tensor(float) of shape (num_samples, num_shapelets)
+        """
+        if not isinstance(X, torch.Tensor):
+            X = torch.tensor(X, dtype=torch.float)
+        if self.to_cuda:
+            X = X.cuda()
+
+        with torch.no_grad():
+            shapelet_transform = self.model.transform(X)
+        return shapelet_transform.squeeze().cpu().detach().numpy()
+
+    def predict(self, X, batch_size=256):
+        """
+        Use the model for inference.
+        @param X: the time series data
+        @type X: tensor(float) of shape (n_samples, in_channels, len_ts)
+        @param batch_size: the batch to predict with
+        @type batch_size: int
+        @return: the logits for the class predictions of the model
+        @rtype: array(float) of shape (num_samples, num_classes)
+        """
+        X = tensor(X, dtype=torch.float32)
+        if self.to_cuda:
+            X = X.cuda()
+        ds = TensorDataset(X)
+        dl = DataLoader(ds, batch_size=batch_size, shuffle=False, drop_last=False)
+
+        # set model in eval mode
+        self.model.eval()
+
+        """Evaluate the given data loader on the model and return predictions"""
+        result = None
+        with torch.no_grad():
+            for x in dl:
+                y_hat = self.model(x[0])
+                y_hat = y_hat.cpu().detach().numpy()
+                result = y_hat if result is None else np.concatenate((result, y_hat), axis=0)
+        return result
+
+    def get_shapelets(self):
+        """
+        Return a matrix of all shapelets. The shapelets are ordered (ascending) according to
+        the shapelet lengths and padded with NaN.
+        @return: a tensor of all shapelets
+        @rtype: tensor(float) with shape (in_channels, num_total_shapelets, shapelets_size_max)
+        """
+        return self.model.get_shapelets().clone().cpu().detach().numpy()
+
+    def get_weights_linear_layer(self):
+        return (self.model.linear.weight.data.clone().cpu().detach().numpy(),
+                self.model.linear.bias.data.clone().cpu().detach().numpy())
