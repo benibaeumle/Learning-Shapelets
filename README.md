@@ -58,7 +58,7 @@ shapelet_transform = learning_shapelets.transform(X_test)
 predictions = learning_shapelets.predict(X_test)
 ```
 
-See the [demo]() for a detailed example.
+See the [demo](https://github.com/benibaeumle/Learning-Shapelets/blob/main/demo/demo.ipynb) for a detailed example.
 
 ## License
 
