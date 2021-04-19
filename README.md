@@ -12,6 +12,8 @@ Shapelets are discriminative sub-sequences of time series that best predict the 
 A PyTorch implementation of learning shapelets from the paper
 > Josif Grabocka, Nicolas Schilling, Martin Wistuba, and Lars Schmidt-Thieme. 2014. Learning time-series shapelets. In Proceedings of the 20th ACM SIGKDD international conference on Knowledge discovery and data mining (KDD '14). Association for Computing Machinery, New York, NY, USA, 392–401.
 
+This implementation deviates from the paper by implementing multiple distance measures (euclidean distance, cross-correlation, and cosine similarity) and we use a hard-mininmum function compared to a soft-minimum in the paper.
+
 See the [paper](https://doi.org/10.1145/2623330.2623613) for a more detailed description.
 
 ## How to use
