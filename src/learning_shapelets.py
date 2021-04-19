@@ -163,7 +163,6 @@ class MaxCosineSimilarityBlock(nn.Module):
         x = torch.sum(x, dim=1, keepdim=True).transpose(2, 3)
         # ignore negative distances
         x = self.relu(x)
-        # hard min compared to soft-min from the paper
         x, _ = torch.max(x, 3)
         return x
 
