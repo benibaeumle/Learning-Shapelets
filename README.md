@@ -1,6 +1,5 @@
 # Learning Time Series Shapelets
 
-## Abstract
 <p align="justify">
 Shapelets are discriminative sub-sequences of time series that best predict the target variable. For this reason, shapelet discovery has recently attracted considerable interest within the time-series research community. Currently shapelets are found by evaluating the prediction qualities of numerous candidates extracted from the series segments. In contrast to the state-of-the-art, this paper proposes a novel perspective in terms of learning shapelets. A new mathematical formalization of the task via a classiﬁcation objective function is proposed and a tailored stochastic gradient learning algorithm is applied. The proposed method enables learning nearto-optimal shapelets directly without the need to try out lots of candidates. Furthermore, our method can learn true top-K shapelets by capturing their interaction. Extensive experimentation demonstrates statistically signiﬁcant improvement in terms of wins and ranks against 13 baselines over 28 time-series datasets.
 </p>
@@ -12,7 +11,7 @@ Shapelets are discriminative sub-sequences of time series that best predict the 
 A PyTorch implementation of learning shapelets from the paper
 > Josif Grabocka, Nicolas Schilling, Martin Wistuba, and Lars Schmidt-Thieme. 2014. Learning time-series shapelets. In Proceedings of the 20th ACM SIGKDD international conference on Knowledge discovery and data mining (KDD '14). Association for Computing Machinery, New York, NY, USA, 392–401.
 
-This implementation deviates from the paper by implementing multiple distance measures (euclidean distance, cross-correlation, and cosine similarity) and we use a hard-mininmum function compared to a soft-minimum in the paper.
+*This implementation deviates from the paper by implementing multiple distance measures (euclidean distance, cross-correlation, and cosine similarity) and we use a hard-mininmum function compared to a soft-minimum in the paper.*
 
 See the [paper](https://doi.org/10.1145/2623330.2623613) for a more detailed description.
 
@@ -64,25 +63,23 @@ See the [demo](https://github.com/benibaeumle/Learning-Shapelets/blob/main/demo/
 
 ### Parameters
 
-* `len_ts` : **int**  
-  The length of the time series.
-* `shapelets_size_and_len` : **dict(int: int)**  
-  The keys are the length of the shapelets and the values the number of shapelets of
-  a given length, e.g. {40: 4, 80: 4} learns 4 shapelets of length 40 and 4 shapelets of
-  length 80.   
-* `in_channels` : **int**  
-  the number of channels of the time series.
-* `num_classes` : **int**  
-  the number of output classes.
-* `loss_func` : **torch.nn**  
-  the loss function.
-* `dist_measure` : **'euclidean'**, **'cross-correlation'**, or **'cosine'**  
-  the distance measure to use to compute the distances between the shapelets.
-  and the time series.
-* `to_cuda` : **bool**  
-  Performs computations on GPU is true. Needs pytorch with GPU support.
-* `verbose` : **bool**  
-  Monitors training loss if set to true.
+```
+--len_ts                    int                   The length of the time series.
+--shapelets_size_and_len    dict(int, int)        The keys are the length of the shapelets
+                                                  and the values the number of shapelets of
+                                                  a given length, e.g. {40: 4, 80: 4} learns
+                                                  4 shapelets of length 40 and 4 shapelets of
+                                                  length 80.
+--in_channels               int                   The number of channels of the time series.      Default: 1
+--num_classes               int                   The number of output classes.                   Default: 2
+--loss_func                 torch.nn              The loss function.
+--dist_measure              'euclidean',          The distance measure to use to compute the      Default: 'euclidean'
+                            'cross-correlation',  distances between the shapelets and the
+                            or 'cosine'           the series.
+--to_cuda                   bool                  Performs computations on GPU is true.           Default: True
+                                                  Needs PyTorch with GPU support.
+--verbose                   int                   Monitors training loss if set to 1.             Default: 0
+```
 
 ### Methods
 
