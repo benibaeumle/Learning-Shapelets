@@ -123,7 +123,6 @@ class MaxCosineSimilarityBlock(nn.Module):
     cuda : bool
         if true loads everything to the GPU
     """
-    # TODO Why is this multiple time slower than the other two implementations?
     def __init__(self, shapelets_size, num_shapelets, in_channels=1, to_cuda=True):
         super(MaxCosineSimilarityBlock, self).__init__()
         self.to_cuda = to_cuda
@@ -233,6 +232,7 @@ class MaxCrossCorrelationBlock(nn.Module):
     cuda : bool
         if true loads everything to the GPU
     """
+    # TODO Why is this multiple time slower than the other two implementations?
     def __init__(self, len_ts, shapelets_size, num_shapelets, in_channels=1, to_cuda=True):
         super(MaxCrossCorrelationBlock, self).__init__()
         self.shapelets = nn.Conv1d(in_channels, num_shapelets, kernel_size=shapelets_size)
