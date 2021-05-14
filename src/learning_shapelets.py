@@ -9,8 +9,8 @@ from tqdm import tqdm
 
 class MinEuclideanDistBlock(nn.Module):
     """
-    Calculates the euclidean distances of a bunch of shapelets to a data set and performs global min-pooling
-    Parameters.
+    Calculates the euclidean distances of a bunch of shapelets to a data set and performs global min-pooling.
+    Parameters
     ----------
     shapelets_size : int
         the size of the shapelets / the number of time steps
@@ -111,8 +111,8 @@ class MinEuclideanDistBlock(nn.Module):
 
 class MaxCosineSimilarityBlock(nn.Module):
     """
-    Calculates the cosine similarity of a bunch of shapelets to a data set and performs global max-pooling
-    Parameters.
+    Calculates the cosine similarity of a bunch of shapelets to a data set and performs global max-pooling.
+    Parameters
     ----------
     shapelets_size : int
         the size of the shapelets / the number of time steps
@@ -221,8 +221,6 @@ class MaxCrossCorrelationBlock(nn.Module):
     performs global max-pooling.
     Parameters
     ----------
-    len_ts : int
-        the length of the time series
     shapelets_size : int
         the size of the shapelets / the number of time steps
     num_shapelets : int
@@ -233,10 +231,9 @@ class MaxCrossCorrelationBlock(nn.Module):
         if true loads everything to the GPU
     """
     # TODO Why is this multiple time slower than the other two implementations?
-    def __init__(self, len_ts, shapelets_size, num_shapelets, in_channels=1, to_cuda=True):
+    def __init__(self, shapelets_size, num_shapelets, in_channels=1, to_cuda=True):
         super(MaxCrossCorrelationBlock, self).__init__()
         self.shapelets = nn.Conv1d(in_channels, num_shapelets, kernel_size=shapelets_size)
-        self.max_pool = nn.MaxPool1d(len_ts - shapelets_size + 1, stride=1)
         self.num_shapelets = num_shapelets
         self.shapelets_size = shapelets_size
         if to_cuda:
@@ -251,8 +248,8 @@ class MaxCrossCorrelationBlock(nn.Module):
         @rtype: tensor(n_samples, num_shapelets)
         """
         x = self.shapelets(x)
-        x = self.max_pool(x).transpose(2, 1)
-        return x
+        x, _ = torch.max(x, 2, keepdim=True)
+        return x.transpose(2, 1)
 
     def get_shapelets(self):
         """
@@ -307,8 +304,6 @@ class ShapeletsDistBlocks(nn.Module):
     the shapelets in each block have the same size.
     Parameters
     ----------
-    len_ts : int
-        the length of the time series
     shapelets_size_and_len : dict(int:int)
         keys are the length of the shapelets for a block and the values the number of shapelets for the block
     in_channels : int
@@ -316,7 +311,7 @@ class ShapeletsDistBlocks(nn.Module):
     to_cuda : bool
         if true loads everything to the GPU
     """
-    def __init__(self, len_ts, shapelets_size_and_len, in_channels=1, dist_measure='euclidean', to_cuda=True):
+    def __init__(self, shapelets_size_and_len, in_channels=1, dist_measure='euclidean', to_cuda=True):
         super(ShapeletsDistBlocks, self).__init__()
         self.to_cuda = to_cuda
         self.shapelets_size_and_len = OrderedDict(sorted(shapelets_size_and_len.items(), key=lambda x: x[0]))
@@ -329,7 +324,7 @@ class ShapeletsDistBlocks(nn.Module):
                  for shapelets_size, num_shapelets in self.shapelets_size_and_len.items()])
         elif dist_measure == 'cross-correlation':
             self.blocks = nn.ModuleList(
-                [MaxCrossCorrelationBlock(len_ts=len_ts, shapelets_size=shapelets_size, num_shapelets=num_shapelets,
+                [MaxCrossCorrelationBlock(shapelets_size=shapelets_size, num_shapelets=num_shapelets,
                                           in_channels=in_channels, to_cuda=self.to_cuda)
                  for shapelets_size, num_shapelets in self.shapelets_size_and_len.items()])
         elif dist_measure == 'cosine':
@@ -445,8 +440,6 @@ class LearningShapeletsModel(nn.Module):
     Implements Learning Shapelets. Just puts together the ShapeletsDistBlocks with a
     linear layer on top.
     ----------
-    len_ts : int
-        the length of the time series
     shapelets_size_and_len : dict(int:int)
         keys are the length of the shapelets for a block and the values the number of shapelets for the block
     in_channels : int
@@ -454,14 +447,14 @@ class LearningShapeletsModel(nn.Module):
     to_cuda : bool
         if true loads everything to the GPU
     """
-    def __init__(self, len_ts, shapelets_size_and_len, in_channels=1, num_classes=2, dist_measure='euclidean',
+    def __init__(self, shapelets_size_and_len, in_channels=1, num_classes=2, dist_measure='euclidean',
                  to_cuda=True):
         super(LearningShapeletsModel, self).__init__()
 
         self.to_cuda = to_cuda
         self.shapelets_size_and_len = shapelets_size_and_len
         self.num_shapelets = sum(shapelets_size_and_len.values())
-        self.shapelets_blocks = ShapeletsDistBlocks(len_ts=len_ts, in_channels=in_channels,
+        self.shapelets_blocks = ShapeletsDistBlocks(in_channels=in_channels,
                                                     shapelets_size_and_len=shapelets_size_and_len,
                                                     dist_measure=dist_measure, to_cuda=to_cuda)
         self.linear = nn.Linear(self.num_shapelets, num_classes)
@@ -547,9 +540,8 @@ class LearningShapeletsModel(nn.Module):
 class LearningShapelets:
     """
     Wraps Learning Shapelets in a sklearn kind of fashion.
+    Parameters
     ----------
-    len_ts : int
-        the length of the time series.
     shapelets_size_and_len : dict(int:int)
         The keys are the length of the shapelets and the values the number of shapelets of
         a given length, e.g. {40: 4, 80: 4} learns 4 shapelets of length 40 and 4 shapelets of
@@ -568,10 +560,10 @@ class LearningShapelets:
     to_cuda : bool
         if true loads everything to the GPU
     """
-    def __init__(self, len_ts, shapelets_size_and_len, loss_func, in_channels=1, num_classes=2,
+    def __init__(self, shapelets_size_and_len, loss_func, in_channels=1, num_classes=2,
                  dist_measure='euclidean', verbose=0, to_cuda=True):
 
-        self.model = LearningShapeletsModel(len_ts=len_ts, shapelets_size_and_len=shapelets_size_and_len,
+        self.model = LearningShapeletsModel(shapelets_size_and_len=shapelets_size_and_len,
                                             in_channels=in_channels, num_classes=num_classes, dist_measure=dist_measure,
                                             to_cuda=to_cuda)
         self.to_cuda = to_cuda

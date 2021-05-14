@@ -19,8 +19,7 @@ See the [paper](https://doi.org/10.1145/2623330.2623613) for a more detailed des
 
 ```python
 loss_func = nn.CrossEntropyLoss()
-learning_shapelets = LearningShapelets(len_ts=len_ts,
-                                       shapelets_size_and_len=shapelets_size_and_len,
+learning_shapelets = LearningShapelets(shapelets_size_and_len=shapelets_size_and_len,
                                        in_channels=n_channels,
                                        num_classes=num_classes,
                                        loss_func=loss_func,
@@ -64,7 +63,6 @@ See the [demo](https://github.com/benibaeumle/Learning-Shapelets/blob/main/demo/
 ### Parameters
 
 ```
---len_ts                    int                   The length of the time series.
 --shapelets_size_and_len    dict(int, int)        The keys are the length of the shapelets
                                                   and the values the number of shapelets of
                                                   a given length, e.g. {40: 4, 80: 4} learns
