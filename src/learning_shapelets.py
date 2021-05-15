@@ -75,7 +75,7 @@ class MinEuclideanDistBlock(nn.Module):
         """
         if not isinstance(weights, torch.Tensor):
             weights = torch.tensor(weights, dtype=torch.float)
-        if self.cuda:
+        if self.to_cuda:
             weights = weights.cuda()
         # transpose since internally we need shape (in_channels, num_shapelets, shapelets_size)
         weights = weights.transpose(1, 0)
@@ -102,7 +102,7 @@ class MinEuclideanDistBlock(nn.Module):
                              f"compared to {list(weights[j].shape)}")
         if not isinstance(weights, torch.Tensor):
             weights = torch.Tensor(weights, dtype=torch.float)
-        if self.cuda:
+        if self.to_cuda:
             weights = weights.cuda()
         self.shapelets[:, j] = weights
         self.shapelets = nn.Parameter(self.shapelets).contiguous()
@@ -183,7 +183,7 @@ class MaxCosineSimilarityBlock(nn.Module):
         """
         if not isinstance(weights, torch.Tensor):
             weights = torch.tensor(weights, dtype=torch.float)
-        if self.cuda:
+        if self.to_cuda:
             weights = weights.cuda()
         # transpose since internally we need shape (in_channels, num_shapelets, shapelets_size)
         weights = weights.transpose(1, 0)
@@ -209,7 +209,7 @@ class MaxCosineSimilarityBlock(nn.Module):
                              f"compared to {list(weights[j].shape)}")
         if not isinstance(weights, torch.Tensor):
             weights = torch.Tensor(weights, dtype=torch.float)
-        if self.cuda:
+        if self.to_cuda:
             weights = weights.cuda()
         self.shapelets[:, j] = weights
         self.shapelets = nn.Parameter(self.shapelets).contiguous()
@@ -236,7 +236,8 @@ class MaxCrossCorrelationBlock(nn.Module):
         self.shapelets = nn.Conv1d(in_channels, num_shapelets, kernel_size=shapelets_size)
         self.num_shapelets = num_shapelets
         self.shapelets_size = shapelets_size
-        if to_cuda:
+        self.to_cuda = to_cuda
+        if self.to_cuda:
             self.cuda()
 
     def forward(self, x):
@@ -269,7 +270,7 @@ class MaxCrossCorrelationBlock(nn.Module):
         """
         if not isinstance(weights, torch.Tensor):
             weights = torch.tensor(weights, dtype=torch.float)
-        if self.cuda:
+        if self.to_cuda:
             weights = weights.cuda()
 
         if not list(weights.shape) == list(self.shapelets.weight.data.shape):
@@ -293,7 +294,7 @@ class MaxCrossCorrelationBlock(nn.Module):
                              f"{list(self.shapelets.weight.data[j, :].shape)} compared to {list(weights.shape)}")
         if not isinstance(weights, torch.Tensor):
             weights = torch.tensor(weights, dtype=torch.float)
-        if self.cuda:
+        if self.to_cuda:
             weights = weights.cuda()
         self.shapelets.weight.data[j, :] = weights
 
@@ -567,7 +568,7 @@ class LearningShapelets:
                                             in_channels=in_channels, num_classes=num_classes, dist_measure=dist_measure,
                                             to_cuda=to_cuda)
         self.to_cuda = to_cuda
-        if to_cuda:
+        if self.to_cuda:
             self.model.cuda()
 
         self.shapelets_size_and_len = shapelets_size_and_len
