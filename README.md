@@ -120,7 +120,7 @@ See the [demo](https://github.com/benibaeumle/Learning-Shapelets/blob/main/demo/
 * `set_shapelet_weights(weights)`: Initialize shapelets.
 * `set_shapelet_weights_of_block(i, weights_block)`: Initialize the weights of a shapelet block, blocks are sorted ascending according to the length of the shapelets
 * `update(x, y)`: Perform a single gradient update step with respect to batch (x, y).
-* `update_regularized(x, y`: Performs a single grdient update step with respect to batch (x, y) with the regularized loss function
+* `update_regularized(x, y)`: Performs a single grdient update step with respect to batch (x, y) with the regularized loss function
 * `predict(X)`: Classify X.
 * `get_shapelets()`: Get the learned shapelets.
 * `get_weights_linear_layer()`: Get the weights and biases of the logistic regression layer
