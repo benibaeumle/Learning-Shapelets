@@ -15,10 +15,27 @@ A PyTorch implementation of learning shapelets from the paper
 
 See the [paper](https://doi.org/10.1145/2623330.2623613) for a more detailed description.
 
+## Shapelet Regularizer
+
+When training with cross-entropy loss the learned shapelets might not resemble actual patterns of the dataset.
+We performed experiments with an adapted loss function, introducing two regularizers to steer the learned shapelets to 
+better resemble patterns of the data.
+With the right strength for the regularizers we can consistently learn shapelets that well approximate
+patterns of the dataset without loosing accuracy significantly.
+
+We performed experiments on 85 of the [UCR archive](https://www.cs.ucr.edu/~eamonn/time_series_data_2018/). See [this notebook](experiment_results/experiment_results.ipynb)
+for a description of the loss and for a presentation of the results.
+
+This [demo](demo/demo_regularized_loss.ipynb) further demonstrates the regularized loss on one of the
+UCR datasets.
+
+A very similar idea was introduced in [this paper](https://arxiv.org/abs/2005.13948).
+
 ## How to use
 
 ```python
 loss_func = nn.CrossEntropyLoss()
+# Learning Shapelets as of the paper 'Learning Time Series Shapelets', Grabocka et al. (2014)
 learning_shapelets = LearningShapelets(shapelets_size_and_len=shapelets_size_and_len,
                                        in_channels=n_channels,
                                        num_classes=num_classes,
@@ -26,6 +43,17 @@ learning_shapelets = LearningShapelets(shapelets_size_and_len=shapelets_size_and
                                        to_cuda=True,
                                        verbose=1,
                                        dist_measure=dist_measure)
+# OR Learning Shapelets with regularized loss
+learning_shapelets = LearningShapelets(shapelets_size_and_len=shapelets_size_and_len,
+                                       in_channels=n_channels,
+                                       num_classes=num_classes,
+                                       loss_func=loss_func,
+                                       to_cuda=True,
+                                       verbose=1,
+                                       dist_measure=dist_measure,
+                                       l1=l1,
+                                       l2=l2,
+                                       k=k)
 
 # (Optionally) Initialize shapelet weights, the original paper uses k-Means
 # otherwise the shapelets will be initialized randomly.
@@ -77,6 +105,9 @@ See the [demo](https://github.com/benibaeumle/Learning-Shapelets/blob/main/demo/
 --to_cuda                   bool                  Performs computations on GPU is true.           Default: True
                                                   Needs PyTorch with GPU support.
 --verbose                   int                   Monitors training loss if set to 1.             Default: 0
+--l1                        float                 Value for the regularizer L_dk.                 Default: 0.0
+--l2                        float                 Value for the regularizer L_ss.                 Default: 0.0
+--k                         int                   Value for top k parameter of regularizer L_dk   Default: 0
 ```
 
 ### Methods
@@ -89,6 +120,7 @@ See the [demo](https://github.com/benibaeumle/Learning-Shapelets/blob/main/demo/
 * `set_shapelet_weights(weights)`: Initialize shapelets.
 * `set_shapelet_weights_of_block(i, weights_block)`: Initialize the weights of a shapelet block, blocks are sorted ascending according to the length of the shapelets
 * `update(x, y)`: Perform a single gradient update step with respect to batch (x, y).
+* `update_regularized(x, y`: Performs a single grdient update step with respect to batch (x, y) with the regularized loss function
 * `predict(X)`: Classify X.
 * `get_shapelets()`: Get the learned shapelets.
 * `get_weights_linear_layer()`: Get the weights and biases of the logistic regression layer

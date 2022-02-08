@@ -309,6 +309,8 @@ class ShapeletsDistBlocks(nn.Module):
         keys are the length of the shapelets for a block and the values the number of shapelets for the block
     in_channels : int
         the number of input channels of the dataset
+    dist_measure: 'string'
+        the distance measure, either of 'euclidean', 'cross-correlation', or 'cosine'
     to_cuda : bool
         if true loads everything to the GPU
     """
@@ -435,6 +437,89 @@ class ShapeletsDistBlocks(nn.Module):
             start += block.num_shapelets
         return shapelets
 
+class ShapeletsDistanceLoss(nn.Module):
+    """
+    Calculates the cosine similarity of a bunch of shapelets to a data set and performs global max-pooling.
+    Parameters
+    ----------
+    shapelets_size : int
+        the size of the shapelets / the number of time steps
+    num_shapelets : int
+        the number of shapelets that the block should contain
+    in_channels : int
+        the number of input channels of the dataset
+    cuda : bool
+        if true loads everything to the GPU
+    """
+    def __init__(self, dist_measure='euclidean', k=6):
+        super(ShapeletsDistanceLoss, self).__init__()
+        if not dist_measure == 'euclidean' and not dist_measure == 'cosine':
+            raise ValueError("Parameter 'dist_measure' must be either of 'euclidean' or 'cosine'.")
+        if not isinstance(k, int):
+            raise ValueError("Parameter 'k' must be an integer.")
+        self.dist_measure = dist_measure
+        self.k = k
+
+    def forward(self, x):
+        """
+        Calculate the loss as the average distance to the top k best-matching time series.
+        @param x: the shapelet transform
+        @type x: tensor(float) of shape (batch_size, n_shapelets)
+        @return: the computed loss
+        @rtype: float
+        """
+        y_top, y_topi = torch.topk(x.clamp(1e-8), self.k, largest=False if self.dist_measure == 'euclidean' else True, sorted=False, dim=0)
+        # avoid compiler warning
+        y_loss = None
+        if self.dist_measure == 'euclidean':
+            y_loss = torch.mean(y_top)
+        elif self.dist_measure == 'cosine':
+            y_loss = torch.mean(1 - y_top)
+        return y_loss
+
+class ShapeletsSimilarityLoss(nn.Module):
+    """
+    Calculates the cosine similarity of each block of shapelets and averages over the blocks.
+    ----------
+    """
+    def __init__(self):
+        super(ShapeletsSimilarityLoss, self).__init__()
+
+    def cosine_distance(self, x1, x2=None, eps=1e-8):
+        """
+        Calculate the cosine similarity between all pairs of x1 and x2. x2 can be left zero, in case the similarity
+        between solely all pairs in x1 shall be computed.
+        @param x1: the first set of input vectors
+        @type x1: tensor(float)
+        @param x2: the second set of input vectors
+        @type x2: tensor(float)
+        @param eps: add small value to avoid division by zero.
+        @type eps: float
+        @return: a distance matrix containing the cosine similarities
+        @type: tensor(float)
+        """
+        x2 = x1 if x2 is None else x2
+        w1 = x1.norm(p=2, dim=1, keepdim=True)
+        w2 = w1 if x2 is x1 else x2.norm(p=2, dim=1, keepdim=True)
+        return torch.mm(x1, x2.t()) / (w1 * w2.t()).clamp(min=eps)
+
+    def forward(self, shapelet_blocks):
+        """
+        Calculate the loss as the sum of the averaged cosine similarity of the shapelets in between each block.
+        @param shapelet_blocks: a list of the weights (as torch parameters) of the shapelet blocks
+        @type shapelet_blocks: list of torch.parameter(tensor(float))
+        @return: the computed loss
+        @rtype: float
+        """
+        losses = 0.
+        for block in shapelet_blocks:
+            shapelets = block[1]
+            shapelets.retain_grad()
+            shapelets = torch.squeeze(shapelets, dim=0)
+            sim = self.cosine_distance(shapelets, shapelets)
+            losses += torch.mean(sim)
+        return losses
+
 
 class LearningShapeletsModel(nn.Module):
     """
@@ -445,6 +530,10 @@ class LearningShapeletsModel(nn.Module):
         keys are the length of the shapelets for a block and the values the number of shapelets for the block
     in_channels : int
         the number of input channels of the dataset
+    num_classes: int
+        the number of classes for classification
+    dist_measure: 'string'
+        the distance measure, either of 'euclidean', 'cross-correlation', or 'cosine'
     to_cuda : bool
         if true loads everything to the GPU
     """
@@ -463,7 +552,7 @@ class LearningShapeletsModel(nn.Module):
         if self.to_cuda:
             self.cuda()
 
-    def forward(self, x):
+    def forward(self, x, optimize='acc'):
         """
         Calculate the distances of each time series to the shapelets and stack a linear layer on top.
         @param x: the time series data
@@ -472,9 +561,10 @@ class LearningShapeletsModel(nn.Module):
         @rtype: tensor(float) of shape (num_samples, num_classes)
         """
         x = self.shapelets_blocks(x)
-        y = self.linear(x)
-        y = torch.squeeze(y, 1)
-        return y
+        if optimize == 'acc':
+            x = self.linear(x)
+        x = torch.squeeze(x, 1)
+        return x
 
     def transform(self, X):
         """
@@ -562,7 +652,7 @@ class LearningShapelets:
         if true loads everything to the GPU
     """
     def __init__(self, shapelets_size_and_len, loss_func, in_channels=1, num_classes=2,
-                 dist_measure='euclidean', verbose=0, to_cuda=True):
+                 dist_measure='euclidean', verbose=0, to_cuda=True, k=0, l1=0.0, l2=0.0):
 
         self.model = LearningShapeletsModel(shapelets_size_and_len=shapelets_size_and_len,
                                             in_channels=in_channels, num_classes=num_classes, dist_measure=dist_measure,
@@ -575,6 +665,18 @@ class LearningShapelets:
         self.loss_func = loss_func
         self.verbose = verbose
         self.optimizer = None
+
+        if not all([k == 0, l1 == 0.0, l2 == 0.0]) and not all([k > 0, l1 > 0.0]):
+            raise ValueError("For using the regularizer, the parameters 'k' and 'l1' must be greater than zero."
+                             " Otherwise 'k', 'l1', and 'l2' must all be set to zero.")
+        self.k = k
+        self.l1 = l1
+        self.l2 = l2
+        self.loss_dist = ShapeletsDistanceLoss(dist_measure=dist_measure, k=k)
+        self.loss_sim_block = ShapeletsSimilarityLoss()
+        # add a variable to indicate if regularization shall be used, just used to make code more readable
+        self.use_regularizer = True if k > 0 and l1 > 0.0 else False
+
 
     def set_optimizer(self, optimizer):
         """
@@ -633,6 +735,49 @@ class LearningShapelets:
         self.optimizer.zero_grad()
         return loss.item()
 
+
+    def loss_sim(self):
+        """
+        Get the weights of each shapelet block and calculate the cosine distance between the
+        shapelets inside each block and return the summed distances as their similarity loss.
+        @return: the shapelet similarity loss for the batch
+        @rtype: float
+        """
+        blocks = [params for params in self.model.named_parameters() if 'shapelets_blocks' in params[0]]
+        loss = self.loss_sim_block(blocks)
+        return loss
+
+    def update_regularized(self, x, y):
+        """
+        Performs one gradient update step for the batch of time series and corresponding labels y using the
+        loss L_r.
+        @param x: the batch of time series
+        @type x: array-like(float) of shape (n_batch, in_channels, len_ts)
+        @param y: the labels of x
+        @type y: array-like(long) of shape (n_batch)
+        @return: the three losses cross-entropy, shapelet distance, shapelet similarity for the batch
+        @rtype: Tuple of float
+        """
+        # get cross entropy loss and compute gradients
+        y_hat = self.model(x)
+        loss_ce = self.loss_func(y_hat, y)
+        loss_ce.backward(retain_graph=True)
+
+        # get shapelet distance loss and compute gradients
+        dists_mat = self.model(x, 'dists')
+        loss_dist = self.loss_dist(dists_mat) * self.l1
+        loss_dist.backward(retain_graph=True)
+
+        # get shapelet similarity loss and compute gradients
+        loss_sim = self.loss_sim() * self.l2
+        loss_sim.backward(retain_graph=True)
+
+        # perform gradient upgrade step
+        self.optimizer.step()
+        self.optimizer.zero_grad()
+
+        return loss_ce.item(), loss_dist.item(), loss_sim.item()
+
     def fit(self, X, Y, epochs=1, batch_size=256, shuffle=False, drop_last=False):
         """
         Train the model.
@@ -669,15 +814,30 @@ class LearningShapelets:
         # set model in train mode
         self.model.train()
 
-        losses = []
+        losses_ce = []
+        losses_dist = []
+        losses_sim = []
         progress_bar = tqdm(range(epochs), disable=False if self.verbose > 0 else True)
-        current_loss = 0
+        current_loss_ce = 0
+        current_loss_dist = 0
+        current_loss_sim = 0
         for _ in progress_bar:
             for j, (x, y) in enumerate(train_dl):
-                current_loss = self.update(x, y)
-                losses.append(current_loss)
-            progress_bar.set_description(f"Loss: {current_loss}")
-        return losses
+                # check if training should be done with regularizer
+                if not self.use_regularizer:
+                    current_loss_ce = self.update(x, y)
+                    losses_ce.append(current_loss_ce)
+                else:
+                    current_loss_ce, current_loss_dist, current_loss_sim = self.update_regularized(x, y)
+                    losses_ce.append(current_loss_ce)
+                    losses_dist.append(current_loss_dist)
+                    losses_sim.append(current_loss_sim)
+            if not self.use_regularizer:
+                progress_bar.set_description(f"Loss: {current_loss_ce}")
+            else:
+                progress_bar.set_description(f"Loss CE: {current_loss_ce}, Loss dist: {current_loss_dist}, "
+                                             f"Loss sim: {current_loss_sim}")
+        return losses_ce if not self.use_regularizer else (losses_ce, losses_dist, losses_sim)
 
     def transform(self, X):
         """
@@ -697,6 +857,23 @@ class LearningShapelets:
         return shapelet_transform.squeeze().cpu().detach().numpy()
 
     def fit_transform(self, X, Y, epochs=1, batch_size=256, shuffle=False, drop_last=False):
+        """
+        fit() followed by transform().
+        @param X: the time series data set
+        @type X: array-like(float) of shape (n_samples, in_channels, len_ts)
+        @param Y: the labels of x
+        @type Y: array-like(long) of shape (n_batch)
+        @param epochs: the number of epochs to train
+        @type epochs: int
+        @param batch_size: the batch to train with
+        @type batch_size: int
+        @param shuffle: Shuffle the data at every epoch
+        @type shuffle: bool
+        @param drop_last: Drop the last batch if X is not divisible by the batch size
+        @type drop_last: bool
+        @return: the shapelet transform of x
+        @rtype: tensor(float) of shape (num_samples, num_shapelets)
+        """
         self.fit(X, Y, epochs=epochs, batch_size=batch_size, shuffle=shuffle, drop_last=drop_last)
         return self.transform(X)
 
@@ -732,11 +909,18 @@ class LearningShapelets:
         """
         Return a matrix of all shapelets. The shapelets are ordered (ascending) according to
         the shapelet lengths and padded with NaN.
-        @return: a tensor of all shapelets
-        @rtype: tensor(float) with shape (in_channels, num_total_shapelets, shapelets_size_max)
+        @return: an array of all shapelets
+        @rtype: numpy.array(float) with shape (in_channels, num_total_shapelets, shapelets_size_max)
         """
         return self.model.get_shapelets().clone().cpu().detach().numpy()
 
     def get_weights_linear_layer(self):
+        """
+        Returns the weights for the logistic regression layer.
+        Returns
+        -------
+        @return: a tuple containing the weights and biases
+        @rtype: tuple of numpy.array(float)
+        """
         return (self.model.linear.weight.data.clone().cpu().detach().numpy(),
                 self.model.linear.bias.data.clone().cpu().detach().numpy())
