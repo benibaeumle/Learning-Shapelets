@@ -159,7 +159,8 @@ class MaxCosineSimilarityBlock(nn.Module):
         # add up the distances of the channels in case of
         # multivariate time series
         # Corresponds to the approach 1 and 3 here: https://stats.stackexchange.com/questions/184977/multivariate-time-series-euclidean-distance
-        x = torch.sum(x, dim=1, keepdim=True).transpose(2, 3)
+        n_dims = x.shape[1]
+        x = torch.sum(x, dim=1, keepdim=True).transpose(2, 3) / n_dims
         # ignore negative distances
         x = self.relu(x)
         x, _ = torch.max(x, 3)
@@ -468,7 +469,8 @@ class ShapeletsDistanceLoss(nn.Module):
         @return: the computed loss
         @rtype: float
         """
-        y_top, y_topi = torch.topk(x.clamp(1e-8), self.k, largest=False if self.dist_measure == 'euclidean' else True, sorted=False, dim=0)
+        y_top, y_topi = torch.topk(x.clamp(1e-8), self.k, largest=False if self.dist_measure == 'euclidean' else True,
+                                   sorted=False, dim=0)
         # avoid compiler warning
         y_loss = None
         if self.dist_measure == 'euclidean':
@@ -499,9 +501,22 @@ class ShapeletsSimilarityLoss(nn.Module):
         @type: tensor(float)
         """
         x2 = x1 if x2 is None else x2
-        w1 = x1.norm(p=2, dim=1, keepdim=True)
-        w2 = w1 if x2 is x1 else x2.norm(p=2, dim=1, keepdim=True)
-        return torch.mm(x1, x2.t()) / (w1 * w2.t()).clamp(min=eps)
+        # unfold time series to emulate sliding window
+        x1 = x1.unfold(2, x2.shape[2], 1).contiguous()
+        x1 = x1.transpose(0, 1)
+        # normalize with l2 norm
+        x1 = x1 / x1.norm(p=2, dim=3, keepdim=True).clamp(min=1e-8)
+        x2 = x2 / x2.norm(p=2, dim=2, keepdim=True).clamp(min=1e-8)
+
+        # calculate cosine similarity via dot product on already normalized ts and shapelets
+        x1 = torch.matmul(x1, x2.transpose(1, 2))
+        # add up the distances of the channels in case of
+        # multivariate time series
+        # Corresponds to the approach 1 and 3 here: https://stats.stackexchange.com/questions/184977/multivariate-time-series-euclidean-distance
+        # and average over dims to keep range between 0 and 1
+        n_dims = x1.shape[1]
+        x1 = torch.sum(x1, dim=1) / n_dims
+        return x1
 
     def forward(self, shapelet_blocks):
         """
@@ -515,7 +530,6 @@ class ShapeletsSimilarityLoss(nn.Module):
         for block in shapelet_blocks:
             shapelets = block[1]
             shapelets.retain_grad()
-            shapelets = torch.squeeze(shapelets, dim=0)
             sim = self.cosine_distance(shapelets, shapelets)
             losses += torch.mean(sim)
         return losses
@@ -677,7 +691,6 @@ class LearningShapelets:
         # add a variable to indicate if regularization shall be used, just used to make code more readable
         self.use_regularizer = True if k > 0 and l1 > 0.0 else False
 
-
     def set_optimizer(self, optimizer):
         """
         Set an optimizer for training.
@@ -735,7 +748,6 @@ class LearningShapelets:
         self.optimizer.zero_grad()
         return loss.item()
 
-
     def loss_sim(self):
         """
         Get the weights of each shapelet block and calculate the cosine distance between the
@@ -768,15 +780,17 @@ class LearningShapelets:
         loss_dist = self.loss_dist(dists_mat) * self.l1
         loss_dist.backward(retain_graph=True)
 
-        # get shapelet similarity loss and compute gradients
-        loss_sim = self.loss_sim() * self.l2
-        loss_sim.backward(retain_graph=True)
+        if self.l2 > 0.0:
+            # get shapelet similarity loss and compute gradients
+            loss_sim = self.loss_sim() * self.l2
+            loss_sim.backward(retain_graph=True)
 
         # perform gradient upgrade step
         self.optimizer.step()
         self.optimizer.zero_grad()
 
-        return loss_ce.item(), loss_dist.item(), loss_sim.item()
+        return (loss_ce.item(), loss_dist.item(), loss_sim.item()) if self.l2 > 0.0 else (
+        loss_ce.item(), loss_dist.item())
 
     def fit(self, X, Y, epochs=1, batch_size=256, shuffle=False, drop_last=False):
         """
@@ -828,16 +842,24 @@ class LearningShapelets:
                     current_loss_ce = self.update(x, y)
                     losses_ce.append(current_loss_ce)
                 else:
-                    current_loss_ce, current_loss_dist, current_loss_sim = self.update_regularized(x, y)
+                    if self.l2 > 0.0:
+                        current_loss_ce, current_loss_dist, current_loss_sim = self.update_regularized(x, y)
+                    else:
+                        current_loss_ce, current_loss_dist = self.update_regularized(x, y)
                     losses_ce.append(current_loss_ce)
                     losses_dist.append(current_loss_dist)
-                    losses_sim.append(current_loss_sim)
+                    if self.l2 > 0.0:
+                        losses_sim.append(current_loss_sim)
             if not self.use_regularizer:
                 progress_bar.set_description(f"Loss: {current_loss_ce}")
             else:
-                progress_bar.set_description(f"Loss CE: {current_loss_ce}, Loss dist: {current_loss_dist}, "
-                                             f"Loss sim: {current_loss_sim}")
-        return losses_ce if not self.use_regularizer else (losses_ce, losses_dist, losses_sim)
+                if self.l1 > 0.0 and self.l2 > 0.0:
+                    progress_bar.set_description(f"Loss CE: {current_loss_ce}, Loss dist: {current_loss_dist}, "
+                                                 f"Loss sim: {current_loss_sim}")
+                else:
+                    progress_bar.set_description(f"Loss CE: {current_loss_ce}, Loss dist: {current_loss_dist}")
+        return losses_ce if not self.use_regularizer else (losses_ce, losses_dist, losses_sim) if self.l2 > 0.0 else (
+        losses_ce, losses_dist)
 
     def transform(self, X):
         """
